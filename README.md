@@ -2,6 +2,8 @@
 
 Collects a CPU profile from a running Go application and opens or updates a GitHub pull request with the refreshed PGO profile file.
 
+PGO uses real CPU profiles to optimize hot paths at compile time for better runtime performance (see the [Go blog](https://go.dev/blog/pgo)).
+
 Example config (`config.yaml`):
 
 ```yaml
