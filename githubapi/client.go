@@ -342,28 +342,34 @@ func (client *Client) createCommit(ctx context.Context, req cpgo.UpsertFileReque
 
 // updateHeadRef force-updates the branch ref, creating it when absent.
 func (client *Client) updateHeadRef(ctx context.Context, repository cpgo.RepositoryRef, headBranch string, commitSHA string) (bool, error) {
-	_, _, err := client.githubClient.Git.UpdateRef(ctx, repository.Owner, repository.Name, "heads/"+headBranch, github.UpdateRef{
-		SHA:   commitSHA,
-		Force: new(true),
-	})
+	refName := "heads/" + headBranch
+	_, _, err := client.githubClient.Git.GetRef(ctx, repository.Owner, repository.Name, refName)
 	if err == nil {
+		_, _, err = client.githubClient.Git.UpdateRef(ctx, repository.Owner, repository.Name, refName, github.UpdateRef{
+			SHA:   commitSHA,
+			Force: new(true),
+		})
+		if err != nil {
+			return false, fmt.Errorf("force update branch ref: %w", err)
+		}
+
 		return false, nil
 	}
 
-	if !isNotFound(err) && !isReferenceMissing(err) {
-		return false, fmt.Errorf("force update branch ref: %w", err)
+	if !isNotFound(err) {
+		return false, fmt.Errorf("get head branch ref: %w", err)
 	}
 
 	_, _, err = client.githubClient.Git.CreateRef(ctx, repository.Owner, repository.Name, github.CreateRef{
-		Ref: "refs/heads/" + headBranch,
+		Ref: "refs/" + refName,
 		SHA: commitSHA,
 	})
 	if err == nil {
 		return true, nil
 	}
 
-	// The branch may have been created concurrently after the initial update attempt.
-	_, _, updateErr := client.githubClient.Git.UpdateRef(ctx, repository.Owner, repository.Name, "heads/"+headBranch, github.UpdateRef{
+	// The branch may have been created concurrently after the lookup.
+	_, _, updateErr := client.githubClient.Git.UpdateRef(ctx, repository.Owner, repository.Name, refName, github.UpdateRef{
 		SHA:   commitSHA,
 		Force: new(true),
 	})
@@ -385,29 +391,6 @@ func isNotFound(err error) bool {
 	}
 
 	return githubError.Response.StatusCode == http.StatusNotFound
-}
-
-func isReferenceMissing(err error) bool {
-	var githubError *github.ErrorResponse
-	if !errors.As(err, &githubError) {
-		return false
-	}
-
-	if githubError.Response == nil || githubError.Response.StatusCode != http.StatusUnprocessableEntity {
-		return false
-	}
-
-	if strings.Contains(strings.ToLower(githubError.Message), "reference does not exist") {
-		return true
-	}
-
-	for _, item := range githubError.Errors {
-		if strings.Contains(strings.ToLower(item.Message), "reference does not exist") {
-			return true
-		}
-	}
-
-	return false
 }
 
 func validateRepositoryRef(repository cpgo.RepositoryRef) error {
