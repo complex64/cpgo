@@ -133,6 +133,7 @@ func TestClientFindOpenByHead(t *testing.T) {
 func TestClientUpsertFileAndForceBranch(t *testing.T) {
 	encodedProfile := base64.StdEncoding.EncodeToString([]byte("new-profile"))
 	createRefCalled := false
+	updateRefCalled := false
 
 	githubClient := newGitHubClient(t, http.HandlerFunc(func(response http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
@@ -162,9 +163,18 @@ func TestClientUpsertFileAndForceBranch(t *testing.T) {
 			_, _ = response.Write([]byte(`{"sha":"tree-sha"}`))
 		case "/repos/acme/payments/git/commits":
 			_, _ = response.Write([]byte(`{"sha":"commit-sha"}`))
-		case "/repos/acme/payments/git/refs/heads/cpgo":
-			response.WriteHeader(http.StatusUnprocessableEntity)
-			_, _ = response.Write([]byte(`{"message":"Reference does not exist","errors":[]}`))
+		case "/repos/acme/payments/git/ref/heads/cpgo":
+			switch req.Method {
+			case http.MethodGet:
+				response.WriteHeader(http.StatusNotFound)
+				_, _ = response.Write([]byte(`{"message":"Not Found"}`))
+			case http.MethodPatch:
+				updateRefCalled = true
+				response.WriteHeader(http.StatusForbidden)
+				_, _ = response.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+			default:
+				t.Fatalf("unexpected request method: %s", req.Method)
+			}
 		case "/repos/acme/payments/git/refs":
 			createRefCalled = true
 			var payload struct {
@@ -215,6 +225,54 @@ func TestClientUpsertFileAndForceBranch(t *testing.T) {
 
 	if !createRefCalled {
 		t.Fatalf("expected create ref call")
+	}
+
+	if updateRefCalled {
+		t.Fatalf("expected missing branch to be created without update attempt")
+	}
+}
+
+func TestClientUpdateHeadRef(t *testing.T) {
+	githubClient := newGitHubClient(t, http.HandlerFunc(func(response http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/repos/acme/payments/git/ref/heads/cpgo":
+			_, _ = response.Write([]byte(`{"ref":"refs/heads/cpgo","object":{"type":"commit","sha":"old-commit"}}`))
+		case req.Method == http.MethodPatch && req.URL.Path == "/repos/acme/payments/git/refs/heads/cpgo":
+			var payload struct {
+				SHA   string `json:"sha"`
+				Force bool   `json:"force"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode update ref request: %v", err)
+			}
+
+			if payload.SHA != "new-commit" {
+				t.Fatalf("expected new-commit, got %s", payload.SHA)
+			}
+
+			if !payload.Force {
+				t.Fatalf("expected forced update")
+			}
+
+			_, _ = response.Write([]byte(`{"ref":"refs/heads/cpgo","object":{"type":"commit","sha":"new-commit"}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	}))
+
+	client := mustNewClient(t, githubClient)
+	isBranchCreated, err := client.updateHeadRef(
+		context.Background(),
+		cpgo.RepositoryRef{Owner: "acme", Name: "payments"},
+		"cpgo",
+		"new-commit",
+	)
+	if err != nil {
+		t.Fatalf("update head ref: %v", err)
+	}
+
+	if isBranchCreated {
+		t.Fatalf("expected existing branch update")
 	}
 }
 
